@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+
+import asyncio
+import socket
+import argparse
+import os
+import sys
+import shutil
+
+
+async def check_open_port(ip, port, timeout):
+    conn = asyncio.open_connection(ip, port)
+    try:
+        reader, writer = await asyncio.wait_for(conn, timeout=timeout)
+        writer.close()
+        await writer.wait_closed()
+        return ip, port, True
+    except:
+        return ip, port, False
+
+
+async def async_main(ip_port_pairs, timeout):
+    tasks = [check_open_port(ip, port, timeout) for ip, port in ip_port_pairs]
+    return await asyncio.gather(*tasks)
+
+
+def find_executable_choice(via_option):
+    if via_option:
+        if shutil.which(via_option):
+            return via_option
+        else:
+            print(f"Error: {via_option} not found in PATH.")
+            sys.exit(1)
+    else:
+        if shutil.which("socat"):
+            return "socat"
+        elif shutil.which("nc"):
+            return "nc"
+        else:
+            print("Error: neither socat nor nc found in PATH.")
+            sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Check ports on a list of hosts and proxy to the first one that responds, or print the IP and reachable hosts if --noop is used."
+    )
+    parser.add_argument("--hosts", type=str, required=True, help="Comma-separated list of hosts to check.")
+    parser.add_argument("--port", type=int, required=True, help="Port to check on the hosts.")
+    parser.add_argument("--timeout", type=int, default=1, help="Timeout in seconds for each port check. Default is 1 second.")
+    parser.add_argument(
+        "--via", type=str, choices=["socat", "nc"], help="Choice of tool to use for the connection (socat or nc)."
+    )
+    parser.add_argument(
+        "--noop",
+        action="store_true",
+        help="Only print the IP it would connect to and reachable hosts, do not start proxy.",
+    )
+
+    args = parser.parse_args()
+
+    hosts = args.hosts.split(",")
+    port = args.port
+    timeout = args.timeout
+    via = find_executable_choice(args.via) if not args.noop else None
+    ip_port_pairs = [(host, port) for host in hosts]
+
+    results = asyncio.run(async_main(ip_port_pairs, timeout))
+    reachable_hosts = [ip for ip, _, is_open in results if is_open]
+
+    if args.noop:
+        if reachable_hosts:
+            print(f"First reachable host: {reachable_hosts[0]}:{port}")
+            print("Reachable hosts:", ", ".join(reachable_hosts))
+        else:
+            print("No reachable hosts found.")
+    else:
+        for ip, port, is_open in results:
+            if is_open:
+                if via == "socat":
+                    command = ["socat", "STDIO", f"TCP:{ip}:{port}"]
+                elif via == "nc":
+                    command = ["nc", ip, str(port)]
+                os.execvp(command[0], command)
+                break
+
+
+if __name__ == "__main__":
+    main()
